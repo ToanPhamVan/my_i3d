@@ -1,4 +1,3 @@
-# import cupy as cp
 import os
 import sys
 import argparse
@@ -48,46 +47,32 @@ sys.excepthook = handle_exception
 def evaluate(
     model, model_name, dataloader, loss_fn, steps, class_info, device="cpu", pbar=True
 ):
-
     model.eval()
-
     logits = []
-
     current_loss = 0
 
     with torch.no_grad():
-
         data_iter = tqdm(dataloader, desc="Evaluating") if pbar else dataloader
-
         for data in data_iter:
-
             if model_name != "lstm":
-
                 inputs, labels = data
-
                 inputs = inputs.to(device)
-
             else:
-
                 x_time, x_spatial, labels = data
-
                 inputs = (x_time.to(device), x_spatial.to(device))
 
             labels = labels.to(device)
-
             per_frame_logits = model(inputs)
-
             current_loss += loss_fn(per_frame_logits, labels).cpu().item()
 
             logit = per_frame_logits.max(-1)[1].cpu().numpy()
-
             labels = (labels.to(device).cpu().max(1)[1]).numpy()
 
             for i in range(len(logit)):
-
                 logits.append([logit[i], labels[i]])
 
         elog.evaluate("val", steps, logits, class_info)
+
     current_loss = current_loss / (len(dataloader))
     model.train()
     return current_loss
@@ -117,6 +102,7 @@ def run(
     loss_fn = nn.CrossEntropyLoss()
     HEIGHT = 224
     WIDTH = 224
+
     if model_name != "lstm":
         dataset = dsl.DSL(
             root,
@@ -126,11 +112,11 @@ def run(
             random_seed=seed,
             cache_folder=cache,
         )
-
     else:
         dataset = pose_dsl.DSL(
             root, n_frames=n_frames, random_seed=seed, cache_folder=cache
         )
+
     class_info = dataset.get_classes()
     person_list = dataset.get_persons()
     random.seed(seed)
@@ -140,93 +126,134 @@ def run(
     train_persons = person_list[:val_index]
     val_persons = person_list[val_index:test_index]
     test_persons = person_list[test_index:]
+
     save_model = elog.get_path() + f"/{name}_"
+
     print(
         f"Train: {len(train_persons)}",
         f" Val: {len(val_persons)}",
         f" Test: {len(test_persons)}",
     )
+
     train_filter = dataset.filter(persons=train_persons)
     val_filter = dataset.filter(persons=val_persons)
     test_filter = dataset.filter(persons=test_persons)
+
     print(f"Train set size: {len(train_filter['class'])}")
     print(f"Validation set size: {len(val_filter['class'])}")
     print(f"Test set size: {len(test_filter['class'])}")
+
     with open(args.a_config, "r") as f:
         try:
-            spatial_augument = yaml.safe_load(f).get("augument")
+            spatial_augment = yaml.safe_load(f).get("augment")
         except:
-            spatial_augument = None
+            spatial_augment = None
+
     train_ds = dataset.get_generator(
-        train_filter, mode="train", spatial_augument=spatial_augument, **kwargs
+        train_filter, mode="train", spatial_augment=spatial_augment, **kwargs
     )
+
     train_dl = torch.utils.data.DataLoader(
-        train_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=True
+        train_ds,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        shuffle=True,
     )
+
     val_ds = dataset.get_generator(val_filter, mode="valid", **kwargs)
     val_dl = torch.utils.data.DataLoader(
-        val_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=True
+        val_ds,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        shuffle=False,
     )
+
     test_ds = dataset.get_generator(test_filter, mode="valid", **kwargs)
     test_dl = torch.utils.data.DataLoader(
-        test_ds, batch_size=batch_size, num_workers=num_workers, pin_memory=True
+        test_ds,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=True,
+        shuffle=False,
     )
+
     dataloaders = {"train": train_dl, "val": val_dl, "test": test_dl}
     num_classes = len(dataset.get_classes())
+
     model = get_model(
         model_name,
         num_classes,
-        fintuning=True,
+        finetuning=True,
         num_keypoints=num_keypoints,
         n_frames=n_frames,
         **kwargs,
-    )  # Ensure 'fintuning' is correctly set
+    )
+
     model.to(device)
+
     if len(pretrained_path) > 0:
         model_state_dict = torch.load(pretrained_path, map_location=device)
         model.load_state_dict(model_state_dict)
+
     model = nn.DataParallel(model)
+
     print(f"Train on {device}")
     print(f"Model name {model_name} ")
+
     lr = init_lr
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0000001)
+
     steps = 0
     train_loss = []
     valid_loss = []
-    best_valid_loss = 99999
+    best_valid_loss = float("inf")
+
     for epoch in range(max_steps):
         for phase in ["train", "val"]:
             if phase == "train":
                 lr = optimizer.param_groups[0]["lr"]
                 optimizer.zero_grad()
                 model.train()
-                tot_loss = 0.0
+                total_loss = 0.0
                 num_iter = 0
+
                 pbar = tqdm(
                     enumerate(dataloaders[phase]), total=len(dataloaders[phase])
                 )
+
                 for index, data in pbar:
                     num_iter += 1
+
                     if model_name != "lstm":
                         inputs, labels = data
                         inputs = inputs.to(device)
                     else:
                         x_time, x_spatial, labels = data
                         inputs = (x_time.to(device), x_spatial.to(device))
+
                     labels = labels.to(device)
                     per_frame_logits = model(inputs)
                     loss = loss_fn(per_frame_logits, labels) / num_gradient_per_update
                     loss.backward()
-                    tot_loss += loss.data.item()
+
+                    total_loss += loss.data.item()
+
                     if num_iter == num_gradient_per_update:
                         optimizer.step()
                         optimizer.zero_grad()
-                        info = f"{epoch}/{max_steps}, lr: {lr}, train loss: {tot_loss}"
+
+                        info = (
+                            f"{epoch}/{max_steps}, lr: {lr}, train loss: {total_loss}"
+                        )
                         pbar.set_description(info)
                         pbar.set_postfix()
-                        train_loss.append(tot_loss)
+
+                        train_loss.append(total_loss)
                         num_iter = 0
-                        tot_loss = 0
+                        total_loss = 0
+
                         if (index + 1) % evaluate_frequently == 0:
                             current_valid_loss = evaluate(
                                 model,
@@ -238,14 +265,20 @@ def run(
                                 device=device,
                                 pbar=False,
                             )
+
                             valid_loss.append(current_valid_loss)
                             pbar.set_postfix_str(
                                 f"Valid loss: {round(current_valid_loss, 2)}"
                             )
+
                             if current_valid_loss < best_valid_loss:
-                                torch.save(model.state_dict(), save_model + "best.pt")
+                                torch.save(
+                                    model.module.state_dict(), save_model + "best.pt"
+                                )
                                 best_valid_loss = current_valid_loss
-                torch.save(model, save_model + "last.pt")
+
+                torch.save(model.module.state_dict(), save_model + "last.pt")
+
             if phase == "val":
                 current_valid_loss = evaluate(
                     model,
@@ -256,12 +289,14 @@ def run(
                     class_info,
                     device=device,
                 )
+
                 valid_loss.append(current_valid_loss)
                 print(f"Val loss: ", round(current_valid_loss, 2))
+
                 if current_valid_loss < best_valid_loss:
-                    torch.save(model, save_model + "best.pt")
+                    torch.save(model.module.state_dict(), save_model + "best.pt")
                     best_valid_loss = current_valid_loss
-    torch.save(model.module.state_dict(), save_model + f"last.pt")
+
     plt.figure(clear=True)
     plt.plot(train_loss)
     plt.ylabel("Loss")
@@ -269,6 +304,7 @@ def run(
     plt.title("Train loss")
     plt.savefig(save_model + "train_loss.png")
     plt.close()
+
     plt.figure(clear=True)
     plt.plot(valid_loss)
     plt.ylabel("Loss")
@@ -278,86 +314,154 @@ def run(
     plt.close()
 
 
-# Ensure this block is executed only if this script is directly executed, not imported
+# Ensure this
+# Ensure this script is being run standalone
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Train and evaluate models.")
     parser.add_argument(
-        "--model_name", type=str, default="i3d", help="i3d or s3d or lstm"
-    )
-    parser.add_argument("--pretrained", type=str, default="")
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument(
-        "-r",
-        "--root",
-        type=str,
-        help="root directory of the dataset",
-        default=r"/kaggle/working/test_data",
-    )
-    parser.add_argument(
-        "--learnig_scheduler_gammar",
-        type=float,
-        default=0.7,
-        help="decrease the learning rate by 0.6",
-    )
-    parser.add_argument("--learnig_scheduler_step", type=int, default=15)
-    parser.add_argument("-n", "--n_frames", type=int, help="n frame", default=72)
-    parser.add_argument("--num_keypoints", type=int, help="just for lstm", default=66)
-    parser.add_argument("-c", "--cache", type=str, help="cache directory", default=None)
-    parser.add_argument("--seed", type=int, help="seed", default=42)
-    parser.add_argument(
+        "-c",
         "--a_config",
+        default="cgp_training.yaml",
         type=str,
-        help="spatial augmentation config",
-        default="train_sh/config/spatial_augument_config.yaml",
-    )
-    parser.add_argument("--lr", type=float, default=0.001, help="init learning rate")
-    parser.add_argument(
-        "--epochs", type=int, help="number of training epochs", default=1000
-    )
-    parser.add_argument("--batch_size", type=int, help="batch_size", default=6)
-    parser.add_argument(
-        "--num_workers", type=int, help="number of cpu load data", default=8
+        help="yaml file containing parameters",
     )
     parser.add_argument(
-        "--evaluate_frequently", type=int, help="number of cpu load data", default=200
+        "--gpu",
+        default="0",
+        type=str,
+        help="comma separated list of GPU(s) to use.",
     )
     parser.add_argument(
-        "--num_gradient_per_update", type=int, help="number of cpu load data", default=6
+        "--batch-size",
+        default=8,
+        type=int,
+        help="batch size per GPU",
     )
-    all_model_name = ["i3d", "s3d", "lstm"]
+    parser.add_argument(
+        "--n-frames",
+        default=20,
+        type=int,
+        help="number of frames per clip",
+    )
+    parser.add_argument(
+        "--num-workers",
+        default=4,
+        type=int,
+        help="number of workers for data loading",
+    )
+    parser.add_argument(
+        "--evaluate-frequently",
+        default=100,
+        type=int,
+        help="evaluate every n batches",
+    )
+    parser.add_argument(
+        "--num-gradient-per-update",
+        default=1,
+        type=int,
+        help="number of gradient accumulation steps",
+    )
+    parser.add_argument(
+        "--pretrained-path",
+        default="",
+        type=str,
+        help="/kaggle/working/test_data",
+    )
+    parser.add_argument(
+        "--learnig-scheduler-gammar",
+        default=0.1,
+        type=float,
+        help="gammar of learning scheduler",
+    )
+    parser.add_argument(
+        "--learnig-scheduler-step",
+        default=1000,
+        type=int,
+        help="step of learning scheduler",
+    )
+    parser.add_argument(
+        "--seed",
+        default=42,
+        type=int,
+        help="seed for random generators",
+    )
+    parser.add_argument(
+        "--cache",
+        default=None,
+        type=str,
+        help="Cache folder",
+    )
+    parser.add_argument(
+        "--elog",
+        default=None,
+        type=str,
+        help="path for saving training information",
+    )
+    parser.add_argument(
+        "--name",
+        default="i3d-rgb",
+        type=str,
+        help="model name",
+    )
+    parser.add_argument(
+        "--num-keypoints",
+        default=None,
+        type=int,
+        help="number of keypoints for the pose estimation",
+    )
+    parser.add_argument(
+        "--model-name",
+        default="rgb",
+        type=str,
+        help="name of the model to train",
+    )
+    parser.add_argument(
+        "--init-lr",
+        default=0.01,
+        type=float,
+        help="initial learning rate",
+    )
+    parser.add_argument(
+        "--max-steps",
+        default=50000,
+        type=int,
+        help="number of training steps",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        type=str,
+        help="device to run the model",
+    )
+    parser.add_argument(
+        "--root",
+        default="datasets/data1",
+        type=str,
+        help="directory containing the dataset",
+    )
+
     args = parser.parse_args()
-    root = args.root
-    model_name = args.model_name
-    assert model_name in all_model_name
-    n_frames = args.n_frames
-    pretrained_path = args.pretrained
-    num_gradient_per_update = args.num_gradient_per_update
-    evaluate_frequently = (
-        args.evaluate_frequently // num_gradient_per_update
-    ) * num_gradient_per_update
-    learnig_scheduler_gammar = args.learnig_scheduler_gammar
-    learnig_scheduler_step = args.learnig_scheduler_step
-    print(f"Evaluate frequently: {evaluate_frequently}")
-    print(f"Num gradient per update: {num_gradient_per_update}")
-    name = f"{model_name}-{n_frames}"
-    elog = ev.Eval(run_name=name)
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+
     run(
-        model_name=model_name,
-        device=args.device,
-        root=root,
-        name=name,
-        n_frames=n_frames,
-        elog=elog,
-        seed=args.seed,
-        cache=args.cache,
-        init_lr=args.lr,
-        max_steps=args.epochs,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        evaluate_frequently=evaluate_frequently,
-        num_gradient_per_update=num_gradient_per_update,
-        pretrained_path=pretrained_path,
-        learnig_scheduler_gammar=learnig_scheduler_gammar,
-        learnig_scheduler_step=learnig_scheduler_step,
-        num_keypoints=args.num_keypoints,
+        args.model_name,
+        args.init_lr,
+        args.max_steps,
+        args.device,
+        args.root,
+        args.batch_size,
+        args.n_frames,
+        args.num_workers,
+        args.evaluate_frequently,
+        args.num_gradient_per_update,
+        args.pretrained_path,
+        args.learnig_scheduler_gammar,
+        args.learnig_scheduler_step,
+        args.seed,
+        args.cache,
+        args.elog,
+        args.name,
+        args.num_keypoints,
+        a_config=args.a_config,
     )
